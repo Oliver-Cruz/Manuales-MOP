@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Auditoría de Procedimientos</title>
+  <!-- Tailwind (CDN para prototipo; en producción compilar con el CLI de Tailwind) -->
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen">
+
+<!--
+  ESTRUCTURA DE LA PANTALLA ("pizarrón")
+  ┌──────────────────────────── Encabezado: área, nombre, código, cargar ────────────────────────────┐
+  │ Barra de resumen: estado de auditoría + calificación global + resumen de la IA                   │
+  ├───────────────────────────────────────────────┬──────────────────────────────────────────────────┤
+  │ IZQUIERDA  · Input sección 1 (textarea)       │ DERECHA · Feedback IA sección 1 (espejo)         │
+  │ IZQUIERDA  · Input sección 2                  │ DERECHA · Feedback IA sección 2                  │
+  │ ...  (9 filas, cada fila es un grid de 2 columnas → siempre quedan frente a frente)              │
+  └───────────────────────────────────────────────┴──────────────────────────────────────────────────┘
+  Las filas se generan desde GET /api/sections, así frontend y backend comparten el mismo catálogo.
+-->
+
+<header class="bg-white border-b border-slate-200 sticky top-0 z-20">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-end gap-3">
+    <div class="mr-auto">
+      <h1 class="text-lg font-semibold">Auditoría inteligente de procedimientos</h1>
+      <p class="text-xs text-slate-500">Captura a la izquierda · feedback de IA a la derecha</p>
+    </div>
+
+    <label class="text-xs font-medium">Procedimiento existente
+      <select id="procSelect" class="block mt-1 w-56 rounded-md border-slate-300 border px-2 py-1.5 text-sm">
+        <option value="">— Nuevo procedimiento —</option>
+      </select>
+    </label>
+    <label class="text-xs font-medium">Área *
+      <select id="areaSelect" required class="block mt-1 w-44 rounded-md border-slate-300 border px-2 py-1.5 text-sm"></select>
+    </label>
+    <label class="text-xs font-medium">Código
+      <input id="codigo" placeholder="FIN-PR-001" class="block mt-1 w-32 rounded-md border-slate-300 border px-2 py-1.5 text-sm" />
+    </label>
+    <label class="text-xs font-medium">Nombre del procedimiento *
+      <input id="nombre" required placeholder="Ej. Pago a proveedores" class="block mt-1 w-64 rounded-md border-slate-300 border px-2 py-1.5 text-sm" />
+    </label>
+    <button id="btnSave" class="rounded-md bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium px-4 py-2">
+      Guardar y auditar con IA
+    </button>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-4 py-4 space-y-4">
+  <!-- Resumen global de la auditoría -->
+  <section id="summary" class="hidden bg-white rounded-lg border border-slate-200 p-4 flex gap-4 items-start">
+    <div id="score" class="shrink-0 w-16 h-16 rounded-full grid place-items-center text-xl font-bold"></div>
+    <div class="min-w-0">
+      <p id="summaryState" class="text-xs uppercase tracking-wide font-semibold"></p>
+      <p id="summaryText" class="text-sm mt-1"></p>
+    </div>
+  </section>
+
+  <!-- Encabezados de columna (sólo en pantallas anchas) -->
+  <div class="hidden lg:grid grid-cols-2 gap-4 text-xs font-semibold uppercase tracking-wide text-slate-500 px-1">
+    <span>Información del procedimiento</span>
+    <span>Feedback de IA</span>
+  </div>
+
+  <!-- Aquí se insertan las 9 filas Input | Feedback -->
+  <div id="rows" class="space-y-4"></div>
+</main>
+
+<!-- Plantilla de una fila: IZQUIERDA (input) + DERECHA (feedback espejo) -->
+<template id="rowTpl">
+  <article class="grid grid-cols-1 lg:grid-cols-2 gap-4" data-row>
+    <!-- IZQUIERDA -->
+    <div data-input-card class="bg-white rounded-lg border-2 border-slate-200 p-4 flex flex-col transition-colors">
+      <label class="font-semibold text-sm" data-title></label>
+      <p class="text-xs text-slate-500 mt-0.5 mb-2" data-guide></p>
+      <textarea data-input rows="6" class="w-full flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y"></textarea>
+    </div>
+    <!-- DERECHA (espejo) -->
+    <div data-feedback class="bg-slate-50 rounded-lg border border-dashed border-slate-300 p-4 text-sm">
+      <p class="text-slate-400 italic">Sin feedback todavía. Guarda el procedimiento para auditarlo.</p>
+    </div>
+  </article>
+</template>
+
+<script>
+/* ────────────────────────────── Configuración ──────────────────────────────
+   Si el HTML lo sirve FastAPI ("/"), la API está en el mismo origen.
+   Si lo abres desde otro servidor, cambia API_BASE a "http://localhost:8000". */
+const API_BASE = location.protocol === "file:" ? "http://localhost:8000" : "";
+
+/* Estilos por dictamen de la IA */
+const ESTADOS = {
+  cumple:    { label: "Cumple",    badge: "bg-emerald-100 text-emerald-800", border: "border-emerald-400", box: "bg-emerald-50 border-emerald-200" },
+  parcial:   { label: "Parcial",   badge: "bg-amber-100 text-amber-800",     border: "border-amber-400",   box: "bg-amber-50 border-amber-200" },
+  no_cumple: { label: "No cumple", badge: "bg-rose-100 text-rose-800",       border: "border-rose-500",    box: "bg-rose-50 border-rose-200" },
+  vacio:     { label: "Vacía",     badge: "bg-slate-200 text-slate-700",     border: "border-rose-300",    box: "bg-slate-50 border-slate-300" },
+};
+
+let SECTIONS = [];          // catálogo que viene del backend
+let currentId = null;       // id del procedimiento abierto (null = nuevo)
+const rowsByKey = {};       // key → { input, feedback, card }
+
+/* ─────────────────────────────── Utilidades ──────────────────────────────── */
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function api(path, options = {}) {
+  const res = await fetch(API_BASE + path, { headers: { "Content-Type": "application/json" }, ...options });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : body.detail;
+    throw new Error(detail || `Error ${res.status}`);
+  }
+  return body;
+}
+
+/* ───────────────────────── 1. Pintar las 9 filas ─────────────────────────── */
+function buildRows() {
+  const tpl = $("rowTpl");
+  SECTIONS.forEach((s, i) => {
+    const node = tpl.content.cloneNode(true);
+    node.querySelector("[data-title]").textContent = `${i + 1}. ${s.title}`;
+    node.querySelector("[data-guide]").textContent = s.guide;
+    const input = node.querySelector("[data-input]");
+    input.id = `in_${s.key}`;
+    node.querySelector("[data-title]").htmlFor = input.id;
+    rowsByKey[s.key] = {
+      input,
+      card: node.querySelector("[data-input-card]"),
+      feedback: node.querySelector("[data-feedback]"),
+    };
+    $("rows").appendChild(node);
+  });
+}
+
+/* ─────────────── 2. Pintar el feedback de UNA sección (derecha) ─────────────── */
+function renderFeedback(key, fb) {
+  const { feedback, card } = rowsByKey[key];
+  card.classList.remove(...Object.values(ESTADOS).map((e) => e.border));
+  card.classList.add("border-slate-200");
+
+  if (!fb) {
+    feedback.className = "bg-slate-50 rounded-lg border border-dashed border-slate-300 p-4 text-sm";
+    feedback.innerHTML = `<p class="text-slate-400 italic">Sin feedback todavía. Guarda el procedimiento para auditarlo.</p>`;
+    return;
+  }
+  const st = ESTADOS[fb.estado] ?? ESTADOS.parcial;
+  // Marca el cuadro de captura (izquierda) con el color del dictamen
+  card.classList.remove("border-slate-200");
+  card.classList.add(st.border);
+
+  const list = (title, items, color) => items?.length
+    ? `<p class="font-semibold mt-3 ${color}">${title}</p>
+       <ul class="list-disc ml-5 mt-1 space-y-0.5">${items.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`
+    : "";
+
+  feedback.className = `rounded-lg border p-4 text-sm ${st.box}`;
+  feedback.innerHTML = `
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-xs font-semibold px-2 py-0.5 rounded-full ${st.badge}">${st.label}</span>
+      ${fb.sugerencia ? `<button data-apply class="text-xs text-indigo-700 hover:underline">Usar sugerencia en el texto ↩</button>` : ""}
+    </div>
+    <p class="mt-2">${esc(fb.comentario)}</p>
+    ${list("Le hace falta:", fb.faltantes, "text-rose-700")}
+    ${list("Inconsistencias:", fb.inconsistencias, "text-amber-700")}
+    ${fb.sugerencia ? `<p class="font-semibold mt-3 text-indigo-700">Sugerencia de corrección:</p>
+       <p class="mt-1 whitespace-pre-line bg-white/70 rounded p-2 border border-white">${esc(fb.sugerencia)}</p>` : ""}`;
+
+  // Regresa la sugerencia al cuadro de texto para que el usuario la edite
+  feedback.querySelector("[data-apply]")?.addEventListener("click", () => {
+    const { input } = rowsByKey[key];
+    if (input.value.trim() && !confirm("¿Reemplazar el texto actual por la sugerencia de la IA?")) return;
+    input.value = fb.sugerencia;
+    input.focus();
+  });
+}
+
+function renderLoading() {
+  Object.values(rowsByKey).forEach(({ feedback }) => {
+    feedback.className = "bg-indigo-50 rounded-lg border border-indigo-200 p-4 text-sm";
+    feedback.innerHTML = `<div class="flex items-center gap-2 text-indigo-700">
+      <span class="w-4 h-4 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></span>
+      La IA está analizando esta sección…</div>`;
+  });
+}
+
+/* ──────────── 3. Pintar todo el procedimiento (izquierda + derecha) ──────────── */
+function renderProcedure(p) {
+  currentId = p?.id ?? null;
+  $("nombre").value = p?.nombre ?? "";
+  $("codigo").value = p?.codigo ?? "";
+  if (p) $("areaSelect").value = p.area_id;
+  SECTIONS.forEach(({ key }) => {
+    rowsByKey[key].input.value = p?.[key] ?? "";
+    renderFeedback(key, p?.feedback?.[key]);
+  });
+  renderSummary(p);
+}
+
+function renderSummary(p) {
+  const box = $("summary");
+  if (!p || p.estado_auditoria === "pendiente") return box.classList.add("hidden");
+  box.classList.remove("hidden");
+
+  const score = p.calificacion_global;
+  const color = score == null ? "bg-slate-200 text-slate-600" : score >= 80 ? "bg-emerald-100 text-emerald-800" : score >= 60 ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-800";
+  $("score").className = `shrink-0 w-16 h-16 rounded-full grid place-items-center text-xl font-bold ${color}`;
+  $("score").textContent = score ?? "—";
+
+  if (p.estado_auditoria === "error") {
+    $("summaryState").className = "text-xs uppercase tracking-wide font-semibold text-rose-700";
+    $("summaryState").textContent = "Error en la auditoría (tu información sí se guardó)";
+    $("summaryText").textContent = p.error_auditoria;
+  } else {
+    $("summaryState").className = "text-xs uppercase tracking-wide font-semibold text-slate-500";
+    $("summaryState").textContent = `Auditoría ${p.estado_auditoria}` + (p.auditado_en ? ` · ${new Date(p.auditado_en).toLocaleString()}` : "");
+    $("summaryText").textContent = p.resumen_general ?? "";
+  }
+}
+
+/* ──────────────── 4. Guardar → disparar IA → pintar feedback ──────────────── */
+async function saveAndAudit() {
+  const payload = {
+    nombre: $("nombre").value.trim(),
+    codigo: $("codigo").value.trim() || null,
+    area_id: Number($("areaSelect").value),
+  };
+  if (!payload.area_id) return alert("Selecciona el área del procedimiento.");
+  if (payload.nombre.length < 3) return alert("Escribe el nombre del procedimiento.");
+  SECTIONS.forEach(({ key }) => (payload[key] = rowsByKey[key].input.value.trim() || null));
+
+  const btn = $("btnSave");
+  btn.disabled = true;
+  btn.textContent = "Analizando con IA…";
+  renderLoading();
+  try {
+    // POST crea; PUT guarda correcciones. Ambos disparan la auditoría.
+    const p = currentId
+      ? await api(`/api/procedimientos/${currentId}`, { method: "PUT", body: JSON.stringify(payload) })
+      : await api(`/api/procedimientos`, { method: "POST", body: JSON.stringify(payload) });
+    renderProcedure(p);
+    await loadProcedureList(p.id);
+  } catch (err) {
+    alert("No se pudo guardar: " + err.message);
+    SECTIONS.forEach(({ key }) => renderFeedback(key, null));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Guardar y auditar con IA";
+  }
+}
+
+/* ─────────────────────────── 5. Catálogos / carga ─────────────────────────── */
+async function loadAreas() {
+  const areas = await api("/api/areas");
+  $("areaSelect").innerHTML = `<option value="">Selecciona…</option>` +
+    areas.map((a) => `<option value="${a.id}">${esc(a.nombre)}</option>`).join("");
+}
+
+async function loadProcedureList(selectedId = null) {
+  const list = await api("/api/procedimientos");
+  $("procSelect").innerHTML = `<option value="">— Nuevo procedimiento —</option>` +
+    list.map((p) => `<option value="${p.id}">${esc(p.codigo ? p.codigo + " · " : "")}${esc(p.nombre)}${p.calificacion_global != null ? ` (${p.calificacion_global})` : ""}</option>`).join("");
+  if (selectedId) $("procSelect").value = selectedId;
+}
+
+$("procSelect").addEventListener("change", async (e) => {
+  const id = e.target.value;
+  renderProcedure(id ? await api(`/api/procedimientos/${id}`) : null);
+});
+$("btnSave").addEventListener("click", saveAndAudit);
+
+(async function init() {
+  try {
+    SECTIONS = await api("/api/sections");
+    buildRows();
+    await Promise.all([loadAreas(), loadProcedureList()]);
+  } catch (err) {
+    $("rows").innerHTML = `<p class="text-rose-700">No se pudo conectar con el backend (${esc(err.message)}). ¿Está corriendo <code>uvicorn app.main:app</code>?</p>`;
+  }
+})();
+</script>
+</body>
+</html>
