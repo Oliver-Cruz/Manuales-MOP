@@ -44,6 +44,8 @@ frontend/
 
 ## Ejecutar
 
+> 👶 ¿Primera vez? Sigue la guía paso a paso para Visual Studio Code: [docs/GUIA_VSCODE.md](docs/GUIA_VSCODE.md)
+
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate
